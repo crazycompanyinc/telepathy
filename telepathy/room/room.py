@@ -25,6 +25,9 @@ class WorkspaceRoom:
         self.pending_scheduled: list[dict[str, Any]] = []
         self.recent_events: list[WorkspaceEvent] = []
         self.intents: list[dict[str, Any]] = []
+        self.waiting_on: dict[str, set[str]] = {}
+        self.violations: list[dict[str, Any]] = []
+        self.disputes: list[dict[str, Any]] = []
         if db:
             self.load_from_db()
 
@@ -102,7 +105,8 @@ class WorkspaceRoom:
                 if agent.status != "offline"
             ]
             locked_files = list(self.locked_files.values())
-            conflicts = predict_conflicts(active_agents, locked_files, self._active_intents())
+            active_intents = self._active_intents()
+            conflicts = predict_conflicts(active_agents, locked_files, active_intents)
             return WorkspaceSnapshot(
                 active_agents=active_agents,
                 locked_files=locked_files,
@@ -112,6 +116,9 @@ class WorkspaceRoom:
                 system_health=self.system_health,
                 pending_scheduled=list(self.pending_scheduled),
                 predicted_conflicts=conflicts,
+                active_intents=[self._serialize_intent(intent) for intent in active_intents],
+                deadlocks=self.detect_deadlocks(),
+                replay_cursor=self.recent_events[-1].event_id if self.recent_events else None,
                 updated_at=utc_now(),
             )
 
@@ -154,6 +161,8 @@ class WorkspaceRoom:
         if status in {"idle", "offline"}:
             agent.current_task = None
             agent.current_target = None
+            if event.agent_id:
+                self.waiting_on.pop(event.agent_id, None)
         if self.db:
             self.db.upsert_agent(agent)
 
@@ -175,8 +184,13 @@ class WorkspaceRoom:
     def _apply_agent_idle(self, event: WorkspaceEvent) -> None:
         self._set_agent_status(event, "idle")
 
+    def _apply_agent_waiting(self, event: WorkspaceEvent) -> None:
+        self._set_agent_status(event, "waiting")
+        self._record_waiting_on(event)
+
     def _apply_agent_blocked(self, event: WorkspaceEvent) -> None:
         self._set_agent_status(event, "blocked")
+        self._record_waiting_on(event)
 
     def _apply_file_lock(self, event: WorkspaceEvent) -> None:
         if event.target:
@@ -249,8 +263,26 @@ class WorkspaceRoom:
         self.pending_scheduled = self.pending_scheduled[-20:]
 
     def _apply_intent(self, event: WorkspaceEvent) -> None:
-        self.intents.append({"agent_id": event.agent_id, "target": event.target, "timestamp": event.timestamp, **event.data})
+        intent_text = event.data.get("intent") or event.data.get("summary") or event.data.get("task") or ""
+        self.intents.append(
+            {
+                "agent_id": event.agent_id,
+                "target": event.target,
+                "timestamp": event.timestamp,
+                "intent": intent_text,
+                "semantic_tags": self._semantic_tags(intent_text, event.target),
+                **event.data,
+            }
+        )
         self.intents = self.intents[-50:]
+
+    def _apply_violation(self, event: WorkspaceEvent) -> None:
+        self.violations.append({"agent_id": event.agent_id, "target": event.target, "timestamp": event.timestamp, **event.data})
+        self.violations = self.violations[-100:]
+
+    def _apply_dispute(self, event: WorkspaceEvent) -> None:
+        self.disputes.append({"agent_id": event.agent_id, "target": event.target, "timestamp": event.timestamp, **event.data})
+        self.disputes = self.disputes[-100:]
 
     def _active_intents(self) -> list[dict[str, Any]]:
         now = utc_now()
@@ -260,3 +292,64 @@ class WorkspaceRoom:
             if isinstance(intent.get("timestamp"), datetime)
             and now - intent["timestamp"] < timedelta(seconds=int(intent.get("ttl", 300)))
         ]
+
+    def _record_waiting_on(self, event: WorkspaceEvent) -> None:
+        if not event.agent_id:
+            return
+        waiting_for = event.data.get("waiting_for") or event.data.get("blocked_by") or []
+        if isinstance(waiting_for, str):
+            waiting_for = [waiting_for]
+        self.waiting_on[event.agent_id] = {str(agent_id) for agent_id in waiting_for if agent_id}
+
+    def detect_deadlocks(self) -> list[dict[str, Any]]:
+        graph = {agent: set(waiting_for) for agent, waiting_for in self.waiting_on.items() if waiting_for}
+        cycles: list[list[str]] = []
+
+        def visit(start: str, current: str, path: list[str]) -> None:
+            for next_agent in graph.get(current, set()):
+                if next_agent == start:
+                    cycles.append(path + [next_agent])
+                elif next_agent not in path:
+                    visit(start, next_agent, path + [next_agent])
+
+        for agent_id in graph:
+            visit(agent_id, agent_id, [agent_id])
+
+        unique: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
+        for cycle in cycles:
+            members = tuple(sorted(set(cycle)))
+            if members in seen:
+                continue
+            seen.add(members)
+            unique.append(
+                {
+                    "severity": "critical",
+                    "agents": list(members),
+                    "cycle": cycle,
+                    "message": " -> ".join(cycle),
+                }
+            )
+        return unique
+
+    def _serialize_intent(self, intent: dict[str, Any]) -> dict[str, Any]:
+        serialized = dict(intent)
+        if isinstance(serialized.get("timestamp"), datetime):
+            serialized["timestamp"] = serialized["timestamp"].isoformat()
+        return serialized
+
+    def _semantic_tags(self, text: str, target: str | None) -> list[str]:
+        source = f"{text} {target or ''}".lower()
+        tags: set[str] = set()
+        keywords = {
+            "auth": ["auth", "jwt", "token", "oauth", "login"],
+            "frontend": ["frontend", "ui", "css", "react", "html"],
+            "backend": ["backend", "api", "service", "database", "db"],
+            "infra": ["deploy", "ci", "terraform", "kubernetes", "docker"],
+            "testing": ["test", "pytest", "coverage", "qa"],
+            "refactor": ["refactor", "cleanup", "rewrite"],
+        }
+        for tag, words in keywords.items():
+            if any(word in source for word in words):
+                tags.add(tag)
+        return sorted(tags)

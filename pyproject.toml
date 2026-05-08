@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telepathy"
-version = "0.1.0"
-description = "Real-time agent workspace awareness system."
+version = "2.0.0"
+description = "Production-grade real-time agent workspace intelligence system."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "Telepathy"}]

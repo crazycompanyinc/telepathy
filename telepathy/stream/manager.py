@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -22,12 +23,16 @@ class StreamConnection:
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
 
 
+ReplayProvider = Callable[[str], dict[str, Any]]
+
+
 class StreamManager:
     """Tracks connected agents and pushes relevant events."""
 
-    def __init__(self, radar: RadarEngine, subscriptions: SubscriptionManager):
+    def __init__(self, radar: RadarEngine, subscriptions: SubscriptionManager, replay_provider: ReplayProvider | None = None):
         self.radar = radar
         self.subscriptions = subscriptions
+        self.replay_provider = replay_provider
         self._connections: dict[str, StreamConnection] = {}
         self._lock = asyncio.Lock()
 
@@ -36,7 +41,10 @@ class StreamManager:
         connection = StreamConnection(str(uuid4()), agent_id, websocket)
         async with self._lock:
             self._connections[connection.connection_id] = connection
-        await websocket.send_json({"type": "snapshot", "data": self.radar.get_agent_view(agent_id)})
+        if self.replay_provider:
+            await websocket.send_json({"type": "replay", "data": self.replay_provider(agent_id)})
+        else:
+            await websocket.send_json({"type": "snapshot", "data": self.radar.get_agent_view(agent_id)})
         return connection
 
     async def disconnect(self, connection_id: str) -> None:

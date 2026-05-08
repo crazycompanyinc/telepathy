@@ -42,6 +42,17 @@ def test_api_exposes_websocket_route(tmp_path) -> None:
     assert "/ws/agent/{agent_id}" in paths
 
 
+async def test_api_exposes_mobile_v2_dashboard_surface(tmp_path) -> None:
+    app = create_app(tmp_path / "api.db")
+    await call(endpoint(app, "/events"), {"event_type": "agent_working", "agent_id": "a1", "target": "frontend/app.tsx", "data": {"task": "edit"}})
+    snapshot = await call(endpoint(app, "/api/v2/snapshot"))
+    zones = await call(endpoint(app, "/api/v2/zones"))
+    replay = await call(endpoint(app, "/api/v2/agents/{agent_id}/replay"), "a1")
+    assert snapshot["health_score"]["score"] <= 100
+    assert zones["frontend"]["active_agents"][0]["agent_id"] == "a1"
+    assert replay["events"][0]["event_type"] == "agent_working"
+
+
 def test_cli_register_and_join_isolated(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()

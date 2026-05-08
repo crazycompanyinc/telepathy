@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from telepathy.core.models import AgentSubscription, WorkspaceAgent, WorkspaceEvent
 
@@ -61,6 +61,16 @@ class TelepathyDB:
                 )
                 """
             )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
 
     def upsert_agent(self, agent: WorkspaceAgent) -> None:
         payload = agent.model_dump_json()
@@ -110,6 +120,52 @@ class TelepathyDB:
                 "SELECT payload FROM events ORDER BY timestamp DESC LIMIT ?", (limit,)
             ).fetchall()
         return [WorkspaceEvent.model_validate_json(row["payload"]) for row in reversed(rows)]
+
+    def save_workspace_snapshot(self, snapshot_id: str, name: str, payload: dict[str, Any], created_at: str) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO workspace_snapshots(snapshot_id, name, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (snapshot_id, name, json.dumps(payload), created_at),
+            )
+
+    def get_workspace_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT snapshot_id, name, payload, created_at FROM workspace_snapshots WHERE snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "snapshot_id": row["snapshot_id"],
+            "name": row["name"],
+            "created_at": row["created_at"],
+            "snapshot": json.loads(row["payload"]),
+        }
+
+    def list_workspace_snapshots(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT snapshot_id, name, payload, created_at
+                FROM workspace_snapshots
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "snapshot_id": row["snapshot_id"],
+                "name": row["name"],
+                "created_at": row["created_at"],
+                "snapshot": json.loads(row["payload"]),
+            }
+            for row in rows
+        ]
 
     def save_subscription(self, subscription: AgentSubscription) -> None:
         with self._lock, self._conn:

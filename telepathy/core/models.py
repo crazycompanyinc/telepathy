@@ -32,12 +32,15 @@ class EventType(StrEnum):
     AGENT_LEAVE = "agent_leave"
     AGENT_WORKING = "agent_working"
     AGENT_IDLE = "agent_idle"
+    AGENT_WAITING = "agent_waiting"
     AGENT_BLOCKED = "agent_blocked"
     SYSTEM_HEALTH = "system_health"
     HEALTH_ALERT = "health_alert"
     SCHEDULE = "schedule"
     SCHEDULE_PENDING = "schedule_pending"
     INTENT = "intent"
+    VIOLATION = "violation"
+    DISPUTE = "dispute"
 
 
 class WorkspaceAgent(BaseModel):
@@ -86,6 +89,16 @@ class WorkspaceSnapshot(BaseModel):
     system_health: dict[str, Any] = Field(default_factory=lambda: {"services": {}})
     pending_scheduled: list[dict[str, Any]] = Field(default_factory=list)
     predicted_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    zones: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    active_intents: list[dict[str, Any]] = Field(default_factory=list)
+    collaboration_suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    anomalies: list[dict[str, Any]] = Field(default_factory=list)
+    capacity: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    deadlocks: list[dict[str, Any]] = Field(default_factory=list)
+    integrations: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    work_patterns: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    health_score: dict[str, Any] = Field(default_factory=dict)
+    replay_cursor: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
 
     def as_dict(self) -> dict[str, Any]:

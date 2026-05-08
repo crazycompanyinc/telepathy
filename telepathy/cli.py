@@ -18,6 +18,7 @@ from telepathy.radar.engine import RadarEngine
 from telepathy.room.room import WorkspaceRoom
 from telepathy.server.app import create_app
 from telepathy.subscriptions.subscriptions import SubscriptionManager
+from telepathy.v2 import WorkspaceIntelligence
 
 
 def build_runtime(db_path: str | Path = DEFAULT_DB_PATH) -> tuple[TelepathyDB, WorkspaceRoom, SubscriptionManager, RadarEngine, EventBus]:
@@ -207,6 +208,7 @@ def demo() -> None:
     subscriptions = SubscriptionManager(db)
     radar_engine = RadarEngine(room, subscriptions)
     bus = EventBus(room, subscriptions)
+    intelligence = WorkspaceIntelligence(room, db)
     summary: list[str] = []
 
     def step(label: str, event_type: EventType, agent_id: str | None = None, target: str | None = None, data: dict[str, Any] | None = None, delay: float = 0.2) -> None:
@@ -228,10 +230,18 @@ def demo() -> None:
     step("T+1:00 - Agent-Alpha locks auth/middleware.py", EventType.FILE_LOCK, "Agent-Alpha", "auth/middleware.py")
     step("T+1:30 - CI starts for feature/auth-v2", EventType.CI_START, "Agent-Alpha", "feature/auth-v2", {"branch": "feature/auth-v2", "status": "running"})
     step("T+2:00 - Felix-CTO refines system design", EventType.AGENT_WORKING, "Felix-CTO", "architecture/v2.md", {"task": "Refining system design"})
-    step("T+2:30 - Agent-Alpha announces intent to modify frontend/api.js", EventType.INTENT, "Agent-Alpha", "frontend/api.js", {"ttl": 300})
+    step(
+        "T+2:30 - Agent-Alpha broadcasts JWT refactor intent",
+        EventType.INTENT,
+        "Agent-Alpha",
+        "backend/auth/tokens.py",
+        {"intent": "refactoring auth to use JWT", "source": "AgentContract", "ttl": 300},
+    )
     step("T+3:00 - CI passes", EventType.CI_END, "Agent-Alpha", "feature/auth-v2", {"branch": "feature/auth-v2", "status": "passed", "tests": 47, "failures": 0})
     step("T+3:30 - Deploy starts for auth-service v2.3", EventType.DEPLOY_START, "Agent-Alpha", "auth-service", {"version": "v2.3", "status": "in_progress"})
     step("T+4:00 - auth-service health degraded", EventType.HEALTH_ALERT, "Agent-Alpha", "auth-service", {"status": "degraded", "detail": "some 503s"})
+    step("T+4:05 - SentryAgent reports contract violation", EventType.VIOLATION, "SentryAgent", "auth-service", {"source": "SentryAgent", "rule": "error-budget"})
+    step("T+4:10 - Quorum opens rollback dispute", EventType.DISPUTE, "Quorum", "auth-service", {"source": "Quorum", "topic": "rollback auth-service"})
     step("T+4:30 - Agent-Alpha rolls back auth-service", EventType.DEPLOY_END, "Agent-Alpha", "auth-service", {"version": "v2.2", "status": "rolled_back"})
     step("T+4:30 - auth-service recovering", EventType.SYSTEM_HEALTH, "Agent-Alpha", "auth-service", {"status": "recovering"})
     step("T+5:00 - auth-service healthy", EventType.SYSTEM_HEALTH, "Agent-Alpha", "auth-service", {"status": "healthy"})
@@ -244,8 +254,17 @@ def demo() -> None:
     click.echo("Late joiner receives full recent history:")
     room.register_agent("Late-Agent", "Late-Agent")
     late_view = radar_engine.get_agent_view("Late-Agent")
-    click.echo(f"  recent_events={len(late_view['recent_events'])}")
+    replay = intelligence.replay_for_agent("Late-Agent")
+    click.echo(f"  recent_events={len(late_view['recent_events'])} replay_events={len(replay['events'])}")
     print_radar(late_view)
+    enriched = intelligence.enriched_snapshot()
+    click.echo("")
+    click.echo("v2.0 intelligence")
+    click.echo(f"  health={enriched['health_score']['summary']}")
+    click.echo(f"  zones={', '.join(zone for zone, data in enriched['zones'].items() if data['recent_events'])}")
+    click.echo(f"  suggestions={len(enriched['collaboration_suggestions'])}")
+    click.echo(f"  anomalies={len(enriched['anomalies'])}")
+    click.echo(f"  integrations={', '.join(name for name, items in enriched['integrations'].items() if items)}")
     click.echo("")
     click.echo("Session summary")
     for item in summary:
